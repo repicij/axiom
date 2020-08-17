@@ -1,123 +1,185 @@
 #!/bin/bash
 
-names=("allen" "archimedes" "stok" "pry" "chell" "fire" "bango" "cage" "xpn" "luke" "haddix" "omnom" "jobs" "ritchie" "knox" "bleeder" "batman" "blink" "ghost" "metcalf" "hickey" "fightnerd" "pancakes" "kennedy" "jarvis" "unicorn" "medin" "mog" "thl" "cuthbert" "fox" "hunt" "austin" "babbage" "banach" "banzai" "bardeen" "bartik" "bassi" "beaver" "bell" "benz" "black" "blackburn" "blackwell" "bohr" "booth" "borg" "bose" "bouman" "boyd" "brown" "buck" "burnell" "cannon" "carson" "cartwright" "cerf" "chatelet" "cohen" "chaum" "clarke" "colden" "cori" "cray" "curie" "darwin" "davinci" "diffie" "dirac" "dubinsky" "easley" "edison" "einstein" "elbakyan" "elion" "ellis" "engelbart" "euclid" "euler" "faraday" "fermat" "fermi" "franklin" "gagarin" "galileo" "gates" "gauss" "goldberg" "goldstine" "goodall" "gould" "greider" "haibt" "hamilton" "haslett" "hawking" "hellman" "heisenberg" "hermann" "herschel" "hertz" "hodgkin" "hoover" "hopper" "hugle" "hypatia" "jackson" "jang" "jennings" "jepsen" "johnson" "joliot" "jones" "kalam" "kare" "keller" "kepler" "kilby" "kirch" "knuth" "lalande" "lamar" "lamport" "leakey" "lederberg" "lehmann" "lewin" "liskov" "lovelace" "margulis" "matsumoto" "maxwell" "mayer" "mccarthy" "mclaren" "mclean" "mcnulty" "mendel" "merkle" "moore" "morse" "murdock" "moser" "napier" "nash" "neumann" "newton" "nightingale" "nobel" "noyce" "panini" "pare" "pascal" "payne" "perlman" "pike" "ptolemy" "raman" "ride" "ritchie" "rhodes" "robinson""rosalind" "rubin" "saha" "sammet" "sanderson" "satoshi" "shamir" "shannon" "shaw" "shirley""snyder" "solomon" "spence" "stonebraker" "sutherland" "swanson" "swartz" "swirles" "tesla""thompson" "torvalds" "tu" "turing" "volhard" "villani" "wescoff" "wilbur" "wiles" "williams""wilson" "wing" "wozniak" "wright" "wu")
+AXIOM_PATH="$HOME/.axiom"
+DOCTL_CONFIG_PATH="$HOME/.config/doctl/config.yaml"
+source "$AXIOM_PATH/interact/includes/vars.sh"
+source "$AXIOM_PATH/interact/includes/system-notification.sh"
 
-# Reset
-Color_Off='\033[0m'       # Text Reset
+BASEOS="$(uname)"
 
-# Regular Colors
-export Black='\033[0;30m'        # Black
-export Red='\033[0;31m'          # Red
-export Green='\033[0;32m'        # Green
-export Yellow='\033[0;33m'       # Yellow
-export Blue='\033[0;34m'         # Blue
-export Purple='\033[0;35m'       # Purple
-export Cyan='\033[0;36m'         # Cyan
-export White='\033[0;37m'        # White
+# function called by trap
+other_commands() {
+    tput setaf 1
+    printf "\rExiting..."
+    echo "Cleaning up created resources..."
+    kill -9  "$PID"
+    $AXIOM_PATH/interact/axiom-rm $gen_name -f
+	echo "Thank you for using axiom :) - @pry0cc"
+	exit
+}
 
-# Bold
-export BBlack='\033[1;30m'       # Black
-export BRed='\033[1;31m'         # Red
-export BGreen='\033[1;32m'       # Green
-export BYellow='\033[1;33m'      # Yellow
-export BBlue='\033[1;34m'        # Blue
-export BPurple='\033[1;35m'      # Purple
-export BCyan='\033[1;36m'        # Cyan
-export BWhite='\033[1;37m'       # White
+trap 'other_commands' SIGINT
 
-gen_name="${names[$RANDOM % ${#names[@]} ]}-$((10 + RANDOM % 20))"
-region="$(jq -r '.region' ~/.axiom/axiom.json)"
-size="$(jq -r '.default_size' ~/.axiom/axiom.json)"
-#domain=$(cat ~/.axiom.json | jq -r '.domain')
+# Per doctl readme the config path differs on OSX: https://github.com/digitalocean/doctl#configuring-default-values
+if [ $BASEOS == "Darwin" ]; then DOCTL_CONFIG_PATH=~/"Library/Application Support/doctl/config.yaml"; fi
+
+if ! command -v doctl &> /dev/null
+then
+    echo -e "${BRed}Error: doctl could not be found. Please install it from the binary${No_Color}"
+    exit
+else
+	token_length=$(cat "$DOCTL_CONFIG_PATH"  | grep access-token | wc -c | awk '{ print $1 }')
+	if [[ "$token_length" -lt 32 ]];
+	then
+		echo -e "${Red}Warning: it looks like your doctl might not be configured with a token!${Color_Off}"
+	fi
+fi
+
+if ! command -v jq &> /dev/null
+then
+    echo -e "${BRed}Error: jq could not be found. Please install it.${No_Color}"
+    exit
+fi
+
+gen_name="${names[$RANDOM % ${#names[@]}]}$((10 + RANDOM % 20))"
+region="$(jq -r '.region' $AXIOM_PATH/axiom.json)"
+size="$(jq -r '.default_size' $AXIOM_PATH/axiom.json)"
 
 box_name=""
 connect_shell=false
 restore=false
 deploy=false
+expire=false
+default_expiry=525600000
+quiet=false
+domain=false
 
-if [ -z "$1" ] || [[ $1 =~ "shell" ]] || [[ $1 =~ "restore" ]] || [[ $1 =~ "deploy" ]];
-then
-    name="$gen_name"
+if [ -z "$1" ] || [[ $1 =~ "shell" ]] || [[ $1 =~ "restore" ]] || [[ $1 =~ "deploy" ]] || [[ $1 =~ "size" ]] || [[ $1 =~ "expire" ]] || [[ $1 =~ "quiet" ]] | [[ $1 =~ "domain" ]]; then
+	name="$gen_name"
 else
-    name="$1"
+	name="$1"
 fi
 
-for var in "$@"
-do
-    if [ "$var" == "--shell" ]
-    then
-        connect_shell=true
-    fi
-    if [[ $var =~ "--restore" ]]
-    then
-        restore="$(echo "$var" | sed 's/=/ /g' | awk '{ print $2 }')"
-        echo -e "${BWhite}Using restore backup '$restore'${Color_Off}"
-    fi
-    if [[ "$var" =~ "--deploy" ]]
-    then
-        deploy="$(echo "$var" | sed 's/=/ /g' | awk '{ print $2 }')"
-        echo -e "${BWhite}Deploying '$deploy' after init${Color_Off}"
-    fi
+for var in "$@"; do
+	if [ "$var" == "--shell" ]; then
+		connect_shell=true
+	fi
+	if [ "$var" == "--quiet" ]; then
+		quiet=true
+	fi
+
+	if [[ $var =~ "--restore" ]]; then
+		restore="$(echo "$var" | sed 's/=/ /g' | awk '{ print $2 }')"
+		echo -e "${BWhite}Using restore backup '$restore'${Color_Off}"
+	fi
+	if [[ "$var" =~ "--deploy" ]]; then
+		deploy="$(echo "$var" | sed 's/=/ /g' | awk '{ print $2 }')"
+		echo -e "${BWhite}Deploying '$deploy' after init${Color_Off}"
+	fi
+	if [[ "$var" =~ "--domain" ]]; then
+		domain="$(echo "$var" | sed 's/=/ /g' | awk '{ print $2 }')"
+		if [ "$quiet" != "true" ]; then
+			echo -e "${BWhite}Manually setting domain to '$domain'${Color_Off}"
+		fi
+	fi
+	if [[ "$var" =~ "--size" ]]; then
+		size="$(echo "$var" | sed 's/=/ /g' | awk '{ print $2 }')"
+		if [ "$quiet" != "true" ]; then
+			echo -e "${BWhite}Manually setting size to '$size'${Color_Off}"
+		fi
+	fi
+	if [[ "$var" =~ "--expire" ]]; then
+		expire="$(echo "$var" | sed 's/=/ /g' | awk '{ print $2 }')"
+		default_expiry=$expire
+		if [ "$quiet" != "true" ]; then
+			echo -e "${BWhite}Setting expiry to $expire minutes...${Color_Off}"
+		fi
+	fi
 done
 
-notify-send "Axiom Info" "Initializing '$name'..."
-echo -e "${BWhite}Initializing '$name'"
 
-image_name="axiom"
+if [[ "$quiet" != "true" ]]; then
+	"$NOTIFY_CMD" "Axiom Info" "Initializing '$name'..."
+	echo -e "${BWhite}Initializing '$name'"
+fi
+image_name="axiom-$region"
 image_id="$(doctl compute image list | grep "$image_name" | tail -n 1 | awk '{ print $1 }')"
 
-resp=$(doctl compute droplet create "$name" --image "$image_id" --size "$size" --region "$region")
-
-secs=$((60))
-while [ $secs -gt 30 ]; do
-   echo -ne ">> T-Minus $secs to stage-1 Lift Off!\033[0K\r"
-   sleep 1
-   : $((secs--))
-done
-
-# Roughly 30 seconds before the public IP is init'd
-ip="$(doctl compute droplet list | grep "$name" | awk '{ print $3 }')"
-#dns=$(doctl compute domain records create $domain --record-type A --record-name $name --record-data $ip)
-
-if [ "$connect_shell" == true ]
-then
-
-	secs=$((80))
-	while [ $secs -gt 0 ]; do
-		echo -ne ">> T-Minus $secs to connect...\033[0K\r"
-		sleep 1
-		: $((secs--))
+show_spinner() {
+	local -r pid="${1}"
+	# This delay is very carefully selected, as it makes makes the spinup feelfaster!!!
+	local -r delay='0.11'
+	# I picked 230 because it's slightly too high, you'll feel happy abouta fast spin time ;_
+	i=420
+	while ps a | awk '{print $1}' | grep -q "${pid}"; do
+		echo -ne "${BWhite}>> T-Minus $i to full initialization...${Color_Off}\r"
+		: $((i--))
+		sleep "$delay"
 	done
+	printf "    \b\b\b\b"
+}
 
-	echo "{\"instance\":\"$name\"}" | jq > ~/.axiom/profile.json
-	notify-send "Axiom Info" "$name successfully initialized at $ip!"
-    echo -e "${BBlue}Connecting...                          ${Color_Off}"
-    ip="$(doctl compute droplet list | grep "$name" | awk '{ print $3 }')"
-    ssh -p2266 op@"$ip"
+waitabit() {
+	local -r pid="${1}"
+	# This delay is very carefully selected, as it makes makes the spinup feelfaster!!!
+	local -r delay='0.11'
+	# I picked 230 because it's slightly too high, you'll feel happy abouta fast spin time ;_
+	i=420
+	while ps a | awk '{print $1}' | grep -q "${pid}"; do
+		: $((i--))
+		sleep "$delay"
+	done
+	printf "    \b\b\b\b"
+}
+
+mkdir -p "$AXIOM_PATH/tmp/"
+cat $AXIOM_PATH/configs/init.sh | sed "s/CHANGEME/$default_expiry/g" >$AXIOM_PATH/tmp/$name.sh
+chmod +x $AXIOM_PATH/tmp/$name.sh
+doctl compute droplet create "$name" --image "$image_id" --size "$size" --region "$region" --wait --user-data-file "$AXIOM_PATH/tmp/$name.sh" 2>&1 >>/dev/null &
+PID="$!"
+if [ "$quiet" != "true" ]; then
+	show_spinner "$PID"
 else
-	secs=$((30))
+	waitabit "$PID"
+fi
+
+ip="$(doctl compute droplet list | grep "$name" | awk '{ print $3 }')"
+ssh-keygen -R "[$ip]:2266" >>  /dev/null 2>&1
+if [ "$quiet" != "true" ]; then
+	secs=$((3))
 	while [ $secs -gt 0 ]; do
-		echo -ne ">> T-Minus $secs to full initialization...\033[0K\r"
-		sleep 1
+		echo -ne "${BWhite}>> T-Minus $secs to full initialization...${Color_Off}\r"
+		sleep 3
 		: $((secs--))
 	done
-
-	echo "{\"instance\":\"$name\"}" | jq > ~/.axiom/profile.json
-	notify-send "Axiom Info" "$name successfully initialized at $ip!"
-    echo -e "${BWhite}Initialized! Instance accessible at '${BGreen}$ip${BWhite}'!"
-    echo -e "To connect, run '${BGreen}axiom-ssh $name${Green}'${Color_Off}"
+else
+	sleep 10
 fi
 
-if [ "$restore" != false ]
-then
-	echo -e "${BWhite}Waiting 30 seconds before restore...${Color_Off}"
-	sleep 42
-    ~/.axiom/interact/axiom-restore "$restore"
+echo "{\"instance\":\"$name\"}" | jq >$AXIOM_PATH/profile.json
+
+"$NOTIFY_CMD" "Axiom Info" "$name successfully initialized at $ip!"
+echo -e "${BWhite}Initialized instance '${BGreen}$name${Color_Off}${BWhite}' at '${BGreen}$ip${BWhite}'!"
+
+if [ "$quiet" != "true" ]; then
+	echo -e "${BWhite}To connect, run '${BGreen}axiom-ssh $name${Color_Off}'${BWhite} or '${BGreen}axiom-connect'${Color_Off}"
 fi
 
-if [ "$deploy" != false ]
-then
-	echo -e "${BWhite}Waiting 30 seconds before deploy... ${Color_Off}"
-	sleep 42
-	~/.axiom/interact/axiom-deploy "$deploy"
+axiom-exec "touch /tmp/.connected" "$name" -q >> /dev/null 2>&1
+
+if [ "$restore" != false ]; then
+	#echo -e "${BWhite}Waiting 65 seconds before restore...${Color_Off}"
+	$AXIOM_PATH/interact/axiom-restore "$restore" "$name"
 fi
+
+if [ "$deploy" != false ]; then
+	#echo -e "${BWhite}Waiting 65 seconds before deploy... ${Color_Off}"
+	$AXIOM_PATH/interact/axiom-deploy "$deploy"
+fi
+
+if [ "$domain" != false ]; then
+	echo -e "${BWhite}Adding DNS record $name.$domain to -> $ip"
+	$AXIOM_PATH/interact/axiom-dns add $name $domain $ip
+fi
+
+$AXIOM_PATH/interact/header.sh
